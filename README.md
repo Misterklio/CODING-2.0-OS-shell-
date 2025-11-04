@@ -62,8 +62,8 @@ Includes an app store popup "APPTools 1.0" to quickly launch apps. Designed to r
 Add more screenshots in the `screenshots/` folder and reference them below. Example:
 
 ```
-![Login](screenshots/login.png)
-![Desktop](screenshots/desktop.png)
+![Login](login.png)
+![Desktop](sdesktop.png)
 ```
 
 ## Contact
