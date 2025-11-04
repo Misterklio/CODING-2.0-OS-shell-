@@ -1,4 +1,5 @@
 # CODING 2.0 — Web Desktop Script
+#// Default password : admin
 
 A single‑file web desktop implemented in `coding2.0.php` with a dock of app icons and draggable popup windows. 
 Includes an app store popup "APPTools 1.0" to quickly launch apps. Designed to run under XAMPP or any PHP environment.
