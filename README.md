@@ -1,22 +1,23 @@
 # CODING 2.0 — Web Desktop Script
 
-A single‑file web desktop implemented in `coding.php` with a dock of app icons and draggable popup windows. Includes an app store popup "APPTools 1.0" to quickly launch apps. Designed to run under XAMPP or any PHP environment.
+A single‑file web desktop implemented in `coding2.0.php` with a dock of app icons and draggable popup windows. 
+Includes an app store popup "APPTools 1.0" to quickly launch apps. Designed to run under XAMPP or any PHP environment.
 
 ## Overview
 
 - Desktop‑like UI: dock icons, popup windows with title bars, close buttons.
 - Persistent state: reopens previously open apps on reload via `localStorage`.
-- Self‑contained: HTML, CSS, and JS in `coding.php` for easy drop‑in use.
+- Self‑contained: HTML, CSS, and JS in `coding2.0.php` for easy drop‑in use.
 - Quick app launching: APPTools 1.0 store shows apps as cards.
 
 ## Quick Start
 
 1. Place this folder under your web root (e.g., XAMPP `htdocs`).
 2. Start a PHP dev server:
-   - If you have system PHP: `php -S localhost:8000 -t /Applications/XAMPP/xamppfiles/htdocs/coding`
+   - If you have system PHP: `php -S localhost:8000 -t /htdocs/coding`
    - Using XAMPP’s PHP on macOS:
-     `/Applications/XAMPP/xamppfiles/bin/php -S 127.0.0.1:8000 -t /Applications/XAMPP/xamppfiles/htdocs/coding`
-3. Open `http://127.0.0.1:8000/coding.php` in your browser.
+     `/bin/php -S 127.0.0.1:8000 -t /htdocs/coding`
+3. Open `http://127.0.0.1:8000/coding2.0.php` in your browser.
 
 ## Included Apps
 
@@ -67,12 +68,12 @@ Add more screenshots in the `screenshots/` folder and reference them below. Exam
 
 ## Contact
 
-- Telegram: https://t.me/YOUR_TELEGRAM_USERNAME
-- GitHub: https://github.com/YOUR_GITHUB_USERNAME
+- Telegram: https://t.me/misterklio
+- GitHub: https://github.com/misterklio
 
 Replace the above links with your actual profiles.
 
 ## Copyright
 
-Copyright © 2025 Mister Klio. All rights reserved.
+Copyright © 2026 Mister Klio. All rights reserved.
 
